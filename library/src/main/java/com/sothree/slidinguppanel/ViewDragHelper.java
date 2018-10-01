@@ -17,8 +17,6 @@
 
 package com.sothree.slidinguppanel;
 
-import java.util.Arrays;
-
 import android.content.Context;
 import android.support.v4.view.MotionEventCompat;
 import android.support.v4.view.VelocityTrackerCompat;
@@ -30,6 +28,8 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.animation.Interpolator;
+
+import java.util.Arrays;
 
 /**
  * ViewDragHelper is a utility class for writing custom ViewGroups. It offers a number
@@ -345,7 +345,19 @@ public class ViewDragHelper {
      * @return a new ViewDragHelper instance
      */
     public static ViewDragHelper create(ViewGroup forParent, Callback cb) {
-        return new ViewDragHelper(forParent.getContext(), forParent, cb);
+        return new ViewDragHelper(forParent.getContext(), forParent, null, cb);
+    }
+
+    /**
+     * Factory method to create a new ViewDragHelper with the specified interpolator.
+     *
+     * @param forParent Parent view to monitor
+     * @param interpolator interpolator for scroller
+     * @param cb Callback to provide information and receive events
+     * @return a new ViewDragHelper instance
+     */
+    public static ViewDragHelper create(ViewGroup forParent, Interpolator interpolator, Callback cb) {
+        return new ViewDragHelper(forParent.getContext(), forParent, interpolator, cb);
     }
 
     /**
@@ -364,14 +376,32 @@ public class ViewDragHelper {
     }
 
     /**
+     * Factory method to create a new ViewDragHelper with the specified interpolator.
+     *
+     * @param forParent Parent view to monitor
+     * @param sensitivity Multiplier for how sensitive the helper should be about detecting
+     *                    the start of a drag. Larger values are more sensitive. 1.0f is normal.
+     * @param interpolator interpolator for scroller
+     * @param cb Callback to provide information and receive events
+     * @return a new ViewDragHelper instance
+     */
+    public static ViewDragHelper create(ViewGroup forParent, float sensitivity, Interpolator interpolator, Callback cb) {
+        final ViewDragHelper helper = create(forParent, interpolator, cb);
+        helper.mTouchSlop = (int) (helper.mTouchSlop * (1 / sensitivity));
+        return helper;
+    }
+
+    /**
      * Apps should use ViewDragHelper.create() to get a new instance.
      * This will allow VDH to use internal compatibility implementations for different
      * platform versions.
+     * If the interpolator is null, the default interpolator will be used.
      *
      * @param context Context to initialize config-dependent params from
      * @param forParent Parent view to monitor
+     * @param interpolator interpolator for scroller
      */
-    private ViewDragHelper(Context context, ViewGroup forParent, Callback cb) {
+    private ViewDragHelper(Context context, ViewGroup forParent, Interpolator interpolator, Callback cb) {
         if (forParent == null) {
             throw new IllegalArgumentException("Parent view may not be null");
         }
@@ -389,7 +419,7 @@ public class ViewDragHelper {
         mTouchSlop = vc.getScaledTouchSlop();
         mMaxVelocity = vc.getScaledMaximumFlingVelocity();
         mMinVelocity = vc.getScaledMinimumFlingVelocity();
-        mScroller = ScrollerCompat.create(context, sInterpolator);
+        mScroller = ScrollerCompat.create(context, interpolator != null ? interpolator : sInterpolator);
     }
 
     /**
@@ -713,12 +743,22 @@ public class ViewDragHelper {
      * @return true if settle is still in progress
      */
     public boolean continueSettling(boolean deferCallbacks) {
+        // Make sure, there is a captured view
+        if (mCapturedView == null) {
+            return false;
+        }
         if (mDragState == STATE_SETTLING) {
             boolean keepGoing = mScroller.computeScrollOffset();
             final int x = mScroller.getCurrX();
             final int y = mScroller.getCurrY();
             final int dx = x - mCapturedView.getLeft();
             final int dy = y - mCapturedView.getTop();
+            
+            if(!keepGoing && dy != 0) { //fix #525
+                //Invalid drag state
+                mCapturedView.setTop(0);
+                return true;
+            }
 
             if (dx != 0) {
                 mCapturedView.offsetLeftAndRight(dx);
@@ -782,7 +822,7 @@ public class ViewDragHelper {
     }
 
     private void clearMotionHistory(int pointerId) {
-        if (mInitialMotionX == null) {
+        if (mInitialMotionX == null || mInitialMotionX.length <= pointerId) {
             return;
         }
         mInitialMotionX[pointerId] = 0;
@@ -839,8 +879,12 @@ public class ViewDragHelper {
             final int pointerId = MotionEventCompat.getPointerId(ev, i);
             final float x = MotionEventCompat.getX(ev, i);
             final float y = MotionEventCompat.getY(ev, i);
-            mLastMotionX[pointerId] = x;
-            mLastMotionY[pointerId] = y;
+            // Sometimes we can try and save last motion for a pointer never recorded in initial motion. In this case we just discard it.
+            if (mLastMotionX != null && mLastMotionY != null
+                    && mLastMotionX.length > pointerId && mLastMotionY.length > pointerId) {
+                mLastMotionX[pointerId] = x;
+                mLastMotionY[pointerId] = y;
+            }
         }
     }
 
@@ -865,7 +909,7 @@ public class ViewDragHelper {
         if (mDragState != state) {
             mDragState = state;
             mCallback.onViewDragStateChanged(state);
-            if (state == STATE_IDLE) {
+            if (mDragState == STATE_IDLE) {
                 mCapturedView = null;
             }
         }
@@ -1000,6 +1044,9 @@ public class ViewDragHelper {
                 final int pointerCount = MotionEventCompat.getPointerCount(ev);
                 for (int i = 0; i < pointerCount && mInitialMotionX != null && mInitialMotionY != null; i++) {
                     final int pointerId = MotionEventCompat.getPointerId(ev, i);
+                    if (pointerId >= mInitialMotionX.length || pointerId >= mInitialMotionY.length) {
+                        continue;
+                    }
                     final float x = MotionEventCompat.getX(ev, i);
                     final float y = MotionEventCompat.getY(ev, i);
                     final float dx = x - mInitialMotionX[pointerId];
@@ -1122,7 +1169,8 @@ public class ViewDragHelper {
                     // Check to see if any pointer is now over a draggable view.
                     final int pointerCount = MotionEventCompat.getPointerCount(ev);
                     for (int i = 0; i < pointerCount; i++) {
-                        final int pointerId = MotionEventCompat.getPointerId(ev, i);
+                        final int pointerId = MotionEventCompat.getPointerId(ev, i)
+                                ;
                         final float x = MotionEventCompat.getX(ev, i);
                         final float y = MotionEventCompat.getY(ev, i);
                         final float dx = x - mInitialMotionX[pointerId];
@@ -1134,7 +1182,7 @@ public class ViewDragHelper {
                             break;
                         }
 
-                        final View toCapture = findTopChildUnder((int) x, (int) y);
+                        final View toCapture = findTopChildUnder((int) mInitialMotionX[pointerId], (int) mInitialMotionY[pointerId]);
                         if (checkTouchSlop(toCapture, dx, dy) &&
                                 tryCaptureViewForDrag(toCapture, pointerId)) {
                             break;
@@ -1350,6 +1398,10 @@ public class ViewDragHelper {
      */
     public boolean isEdgeTouched(int edges, int pointerId) {
         return isPointerDown(pointerId) && (mInitialEdgesTouched[pointerId] & edges) != 0;
+    }
+
+    public boolean isDragging() {
+        return mDragState == STATE_DRAGGING;
     }
 
     private void releaseViewForPointerUp() {
