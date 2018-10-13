@@ -30,6 +30,12 @@ android {
   lintOptions {
     abortOnError false
   }
+
+  defaultConfig {
+    minSdkVersion 15
+    versionName "3.4.0"
+    versionCode 17
+  }
 }
 
 uploadArchives {
